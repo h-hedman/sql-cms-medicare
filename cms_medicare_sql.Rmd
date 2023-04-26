@@ -1,0 +1,86 @@
+---
+title: "SQL Query Examples with CMS Medicare Data"
+output:
+  html_document: default
+  pdf_document: default
+date: "2023-04-26"
+---
+```{r setup, include = FALSE}
+library(rmarkdown)
+library(knitr)
+library(gsheet)
+library(googlesheets4)
+library(DBI)
+library(RSQLite)
+library(odbc)
+library(tidyverse)
+```
+US CMS Medicare Data
+Data Source: https://www.cms.gov/Research-Statistics-Data-and-Systems/Downloadable-Public-Use-Files/SynPUFs
+Codebook: https://www.cms.gov/files/document/de-10-codebook.pdf-0
+```{r, include = FALSE}
+cms_gs <- data.frame(gsheet2tbl('https://docs.google.com/spreadsheets/d/18JDU4ghGCpRgUSDmrjV3LGqaU2HwGiJuejS-8kAZg0Q/edit?usp=sharing'))
+
+# Create dummy education status data
+dummy_edu<- cms_gs[,1:2]
+colnames(dummy_edu)[2] <- "EDUCATION_LEVEL"
+dummy_edu$EDUCATION_LEVEL <- sample(1:3, size = nrow(dummy_edu), replace = TRUE)
+
+# Load state codes
+sate_code_key <- data.frame(gsheet2tbl('https://docs.google.com/spreadsheets/d/1lFTd1IgvkfYOVZGN-X-Mh_WTT0-9ewJPRe6uBDRM7ng/edit?usp=sharing'))
+
+# Clean demographic variables
+cms_gs$BENE_RACE_CD[which(cms_gs$BENE_RACE_CD == 1)] <- "WHITE"
+cms_gs$BENE_RACE_CD[which(cms_gs$BENE_RACE_CD == 2)] <- "BLACK"
+cms_gs$BENE_RACE_CD[which(cms_gs$BENE_RACE_CD == 3)] <- "OTHERS"
+cms_gs$BENE_RACE_CD[which(cms_gs$BENE_RACE_CD == 5)] <- "HISPANIC"
+cms_gs$BENE_SEX_IDENT_CD[which(cms_gs$BENE_SEX_IDENT_CD == 1)] <- "MALE"
+cms_gs$BENE_SEX_IDENT_CD[which(cms_gs$BENE_SEX_IDENT_CD == 2)] <- "FEMALE"
+
+# Merge datasets
+cms_gs2 <- merge(x=cms_gs, y=dummy_edu, by=c("DESYNPUF_ID"), all.x=TRUE)
+cms_df <- merge(x=cms_gs2, y=sate_code_key, by=c("SP_STATE_CODE"), all.x=TRUE)
+
+# Connect to Practice SQL Database
+con_cms <- dbConnect(RSQLite::SQLite(), dbname = "cms_sql.lite")
+
+copy_to(con_cms, 
+        cms_df,    
+        overwrite = TRUE)
+```
+
+Patients with Diabetes (SP_DIABETES) by Sex and Race
+```{sql, connection=con_cms}
+SELECT 
+  cms_df.BENE_SEX_IDENT_CD,
+  cms_df.BENE_RACE_CD,
+  COUNT(cms_df.DESYNPUF_ID) 
+  AS NumberOfPatients 
+  FROM cms_df
+  WHERE cms_df.SP_DIABETES = 1
+GROUP BY 
+  cms_df.BENE_SEX_IDENT_CD, 
+  cms_df.BENE_RACE_CD;
+```
+
+Depression (SP_DEPRESSN) by State 
+```{sql, connection=con_cms}
+SELECT 
+  cms_df.state_code,
+  COUNT(cms_df.DESYNPUF_ID) 
+  AS NumberOfPatients 
+  FROM cms_df 
+  WHERE cms_df.SP_DEPRESSN = 1
+GROUP BY 
+  cms_df.SP_STATE_CODE;
+```
+
+Among patients with SP_CNCR, show the average inpatient annual primary payer reimbursement amount (PPPYMT_IP), average outpatient reimbursement amount, and average (dummy) education level received 
+```{sql, connection=con_cms}
+SELECT 
+  AVG(cms_df.PPPYMT_IP), AVG(MEDREIMB_OP), AVG(EDUCATION_LEVEL)
+  FROM cms_df
+  WHERE SP_CNCR = 1;
+```
+
+
